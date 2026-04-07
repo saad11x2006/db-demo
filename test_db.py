@@ -26,5 +26,5 @@ conn = psycopg2.connect(
     sslmode = "require"
 )
 
-# df = pd.read_sql("SELECT * FROM table", conn)
-# st.dataframe(df)
+df = pd.read_sql("SELECT * FROM table demo", conn)
+st.dataframe(df)
