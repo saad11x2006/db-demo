@@ -1,3 +1,7 @@
 streamlit==1.56.0
 pandas==3.0.2
 psycopg2-binary
+streamlit
+pandas
+sqlalchemy
+psycopg2-binary
