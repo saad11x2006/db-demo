@@ -1,6 +1,8 @@
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, inspect, text
+import matplotlib.pyplot as plt
+from sqlalchemy import create_engine, inspect
+from streamlit_autorefresh import st_autorefresh
 
 
 st.set_page_config(
@@ -8,6 +10,10 @@ st.set_page_config(
     page_icon="🚙",
     layout="wide",
 )
+
+# Auto-refresh every 3 seconds
+st_autorefresh(interval=3000, key="rover_dashboard_refresh")
+
 
 # ------------------------------------------------------------
 # Helpers
@@ -43,28 +49,31 @@ def get_engine():
 
     database_url = (
         f"postgresql+psycopg2://{db['user']}:{db['password']}"
-        f"@{db['host']}:{db['port']}/{db['dbname']}?sslmode=require"
+        f"@{db['host']}:{db['port']}/{db['dbname']}"
+        "?sslmode=require&options=-csearch_path=public"
     )
 
     return create_engine(database_url, pool_pre_ping=True)
 
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=2, show_spinner=False)
 def list_tables():
     engine = get_engine()
     inspector = inspect(engine)
-    return sorted(inspector.get_table_names())
+    return sorted(inspector.get_table_names(schema="public"))
 
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=2, show_spinner=False)
 def load_table(table_name: str, limit: int = 3000):
     engine = get_engine()
 
     safe_table = "".join(ch for ch in table_name if ch.isalnum() or ch == "_")
-    query = text(f'SELECT * FROM "{safe_table}" ORDER BY 1 DESC LIMIT :limit')
+    safe_limit = int(limit)
+
+    query = f'SELECT * FROM public."{safe_table}" ORDER BY 1 DESC LIMIT {safe_limit}'
 
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn, params={"limit": limit})
+        df = pd.read_sql_query(query, conn)
 
     return df
 
@@ -90,21 +99,29 @@ def detect_column(df: pd.DataFrame, candidates):
     return None
 
 
-def parse_time_column(df: pd.DataFrame, time_col: str | None):
+def parse_time_column(df: pd.DataFrame, time_col):
     if time_col and time_col in df.columns:
         df = df.copy()
         df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
     return df
 
 
+def format_metric_value(value, suffix=""):
+    if pd.isna(value):
+        return f"N/A{suffix}"
+    if isinstance(value, float):
+        return f"{value:.2f}{suffix}"
+    return f"{value}{suffix}"
+
+
 def show_metric(df: pd.DataFrame, label: str, column_options, suffix: str = ""):
     col = detect_column(df, column_options)
     if col and not df.empty:
         value = df.iloc[0][col]
-        st.metric(label, f"{value}{suffix}")
+        st.metric(label, format_metric_value(value, suffix))
 
 
-def draw_line_chart(df: pd.DataFrame, title: str, y_options, x_col: str | None):
+def draw_line_chart(df: pd.DataFrame, title: str, y_options, x_col):
     y_col = detect_column(df, y_options)
 
     if x_col and y_col and x_col in df.columns and y_col in df.columns:
@@ -114,7 +131,7 @@ def draw_line_chart(df: pd.DataFrame, title: str, y_options, x_col: str | None):
             st.line_chart(chart_df, x=x_col, y=y_col, use_container_width=True)
 
 
-def draw_lidar_chart(df: pd.DataFrame, x_col: str | None):
+def draw_lidar_chart(df: pd.DataFrame, x_col):
     front_col = detect_column(df, ["front_mm", "front_distance", "front"])
     left_col = detect_column(df, ["left_mm", "left_distance", "left"])
     right_col = detect_column(df, ["right_mm", "right_distance", "right"])
@@ -161,6 +178,49 @@ def show_logs(df: pd.DataFrame):
         st.code("\n".join(reversed(logs)), language="text")
 
 
+def draw_object_detection_pie_chart(df: pd.DataFrame):
+    detection_cols = ["bear", "cyclist", "fox", "reindeer", "robot", "santa"]
+    available_cols = [col for col in detection_cols if col in df.columns]
+
+    if not available_cols:
+        return
+
+    pie_data = df[available_cols].fillna(0).sum()
+    pie_data = pie_data[pie_data > 0]
+
+    st.subheader("Object Detection Pie Chart")
+
+    if pie_data.empty:
+        st.info("No object detections available yet.")
+        return
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.pie(
+        pie_data.values,
+        labels=pie_data.index,
+        autopct="%1.1f%%",
+        startangle=90,
+    )
+    ax.axis("equal")
+    ax.set_title("Detected Object Distribution")
+    st.pyplot(fig)
+
+
+def draw_object_detection_bar_chart(df: pd.DataFrame):
+    detection_cols = ["bear", "cyclist", "fox", "reindeer", "robot", "santa"]
+    available_cols = [col for col in detection_cols if col in df.columns]
+
+    if not available_cols:
+        return
+
+    bar_data = df[available_cols].fillna(0).sum()
+    bar_data = bar_data[bar_data > 0]
+
+    if not bar_data.empty:
+        st.subheader("Object Detection Counts")
+        st.bar_chart(bar_data)
+
+
 # ------------------------------------------------------------
 # App UI
 # ------------------------------------------------------------
@@ -184,10 +244,12 @@ if not tables:
 
 preferred_tables = [
     "rover_telemetry",
-    "telemetry_logs",
-    "telemetry",
+    "object_detection_log",
     "rover_logs",
-    "logs",
+    "rover_status",
+    "lidar_scans",
+    "system_health",
+    "rovvv",
 ]
 
 default_table = tables[0]
@@ -204,7 +266,7 @@ with st.sidebar:
         index=tables.index(default_table)
     )
     row_limit = st.slider("Rows to load", 100, 10000, 3000, 100)
-    refresh_data = st.button("Refresh data", use_container_width=True)
+    refresh_data = st.button("Refresh data now", use_container_width=True)
 
 if refresh_data:
     st.cache_data.clear()
@@ -216,13 +278,13 @@ except Exception as e:
     st.stop()
 
 if df.empty:
-    st.warning(f"Table '{selected_table}' is empty.")
+    st.warning(f"Table 'public.{selected_table}' is empty.")
     st.stop()
 
 time_col = detect_time_column(df)
 df = parse_time_column(df, time_col)
 
-st.success(f"Loaded {len(df)} rows from '{selected_table}'")
+st.success(f"Loaded {len(df)} rows from 'public.{selected_table}'")
 
 # ------------------------------------------------------------
 # Top metrics
@@ -243,6 +305,10 @@ with col4:
     decision_col = detect_column(df, ["decision", "action", "obstacle_decision"])
     if decision_col:
         st.metric("Current Decision", str(df.iloc[0][decision_col]))
+    else:
+        total_col = detect_column(df, ["total_detections"])
+        if total_col and not df.empty:
+            st.metric("Total Detections", str(df.iloc[0][total_col]))
 
 # ------------------------------------------------------------
 # Main dashboard
@@ -255,6 +321,7 @@ with left_col:
     draw_line_chart(df, "Speed Over Time", ["speed_m_s", "speed", "ground_speed"], time_col)
     draw_line_chart(df, "Battery Over Time", ["battery_percent", "remaining_percent", "battery_voltage", "voltage_v"], time_col)
     draw_lidar_chart(df, time_col)
+    draw_object_detection_pie_chart(df)
 
 with right_col:
     draw_decision_chart(df)
@@ -265,6 +332,8 @@ with right_col:
         if not gps_df.empty:
             st.subheader("GPS Satellites")
             st.line_chart(gps_df, x=time_col, y=gps_col, use_container_width=True)
+
+    draw_object_detection_bar_chart(df)
 
 show_logs(df)
 
@@ -279,7 +348,7 @@ APP_PASSKEY = "your-passkey"
 [db]
 host = "your-host"
 port = 5432
-dbname = "your-db-name"
+dbname = "rover"
 user = "your-username"
 password = "your-password"
         """.strip(),
@@ -297,5 +366,15 @@ with st.expander("Recommended table columns"):
 - `decision`
 - `gps_satellites`
 - `log_line`
+
+For object detection:
+- `bear`
+- `cyclist`
+- `fox`
+- `reindeer`
+- `robot`
+- `santa`
+- `total_detections`
+- `inference_ms`
         """
     )
