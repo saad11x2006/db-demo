@@ -19,30 +19,6 @@ st_autorefresh(interval=3000, key="rover_dashboard_refresh")
 # Helpers
 # ------------------------------------------------------------
 
-def require_passkey() -> bool:
-    required_passkey = st.secrets.get("APP_PASSKEY")
-
-    if not required_passkey:
-        st.error("APP_PASSKEY is missing in Streamlit secrets.")
-        return False
-
-    if "auth_ok" not in st.session_state:
-        st.session_state.auth_ok = False
-
-    with st.sidebar:
-        st.subheader("🔐 Access")
-        entered_passkey = st.text_input("Enter passkey", type="password")
-
-        if st.button("Unlock", use_container_width=True):
-            if entered_passkey == required_passkey:
-                st.session_state.auth_ok = True
-                st.success("Access granted")
-            else:
-                st.error("Wrong passkey")
-
-    return st.session_state.auth_ok
-
-
 @st.cache_resource(show_spinner=False)
 def get_engine():
     db = st.secrets["db"]
@@ -228,10 +204,6 @@ def draw_object_detection_bar_chart(df: pd.DataFrame):
 st.title("🚙 Rover Telemetry Dashboard")
 st.caption("Telemetry and rover status from CSC Pukki DBaaS")
 
-if not require_passkey():
-    st.info("Enter the passkey in the sidebar to continue.")
-    st.stop()
-
 try:
     tables = list_tables()
 except Exception as e:
@@ -343,8 +315,6 @@ st.dataframe(df, use_container_width=True, height=400)
 with st.expander("Secrets format"):
     st.code(
         """
-APP_PASSKEY = "your-passkey"
-
 [db]
 host = "your-host"
 port = 5432
